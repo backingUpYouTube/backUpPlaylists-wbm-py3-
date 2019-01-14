@@ -41,6 +41,11 @@ t = threading.Timer(10.0, reportProgress, [i,toGather])
 hardLimitSet=False
 hardLimit = 0
 
+channelLock=False
+channelLockError=False
+channel=""
+invld={}
+
 def makeRequest(partialURL,parameter,ID):
 	pars = {"parameter" : ID}
 	return requests.get(partialURL, params=pars)
@@ -101,7 +106,7 @@ def main():
 			
 			print("Optionally specify the interval of the videos to be scanned.")
 			start = 0
-			end = len(p)+1
+			end = len(p)-1
 
 			while True:
 				print("Type the index of the video you want to start from and the index of the last one you'd like to include.")
@@ -116,14 +121,14 @@ def main():
 						print("Please specify a valid interval!")
 				elif intervalInput=="":
 					start = 0
-					end = len(p)+1
+					end = len(p)-1
 					break
 				else:
 					print("Please type only two numbers representing indices in the playlist if you wish to specify an interval OR press enter to skip.")
 
 			#In the case of a playlist sweep ALSO take a snapshot of the playlist
 			playListSweep = False
-			if start == 0 and end == len(p)+1:
+			if start == 0 and end == len(p)-1:
 				playListSweep = True
 			
 			p = p[start:end]
@@ -131,7 +136,13 @@ def main():
 			#Adjust hard limit so it goes beyond the playlist
 			hardLimitSet = False 
 			err = setHardLimit()
-			t.cancel()
+			if err ==1:
+				continue
+			#ChannelLock
+			channelLock = False 
+			global channelLockError
+			channelLockError = False
+			err = setChannelLock()
 			if err ==1:
 				continue
 
@@ -153,7 +164,7 @@ def main():
 			t.cancel()
 			if err == 1:
 				Break=True
-				break
+				continue
 
 			toGather = len(m)
 			print("Discovered {} videos...".format(toGather))
@@ -167,17 +178,17 @@ def main():
 					code = backUp(ID)
 					if code == 1:
 						t.cancel()
-						# #19 is problematic
+						
 						print("https://www.youtube.com/watch?v={} wasn't saved properly".format(ID))
 						action=""
 						while action!='r' and action!='a' and action!='i':
-							action = input("Type r to retry,i to ignore or a to abort:\n")
+							action = input("Type r to retry, i to ignore or a to abort:\n")
 							action = action.rstrip().strip()
 						if action == 'r':
-							t.start()
+							reportProgress()
 							continue
 						if action == 'i':
-							t.start()
+							reportProgress()
 							i+=1
 							break
 						if action == 'a':
@@ -206,8 +217,9 @@ def main():
 				print("Took a snapshot of the playlist to let people know its been fully scanned.")
 	
 def gatherStartingFromPlaylistVids():
-	global m,q
+	global m,q,invld
 	m={}
+	invld={}
 	q=deque()
 	
 	for video in p:
@@ -222,13 +234,16 @@ def gatherStartingFromPlaylistVids():
 			print("An error occured while trying to gather the videos...")
 			action=""
 			t.cancel()
-			while action!='r' and action!='a'  :
+			if channelLockError:
+				return 1
+			while action!='r' and action!='a':
 				action = input("Type r to retry or a to abort:\n")
 				action = action.rstrip().strip()
+			
 			if action == 'r':
 				#reset this
 				q.append(head)
-				t.start()
+				reportPlaylistProgress()
 				continue
 			if action == 'a':
 				return 1
@@ -251,7 +266,7 @@ def analyzePlaylist(pID):
 					action = input("Type r to retry or a to abort:\n")
 					action = action.rstrip().strip()
 				if action == 'r':
-					t.start()
+					reportPlaylistProgress()
 					continue
 				if action == 'a':
 					return 1
@@ -277,12 +292,14 @@ def analyzePlaylist(pID):
 			while True:
 				r=requests.get(target)
 				if r.status_code != 200:
+					t.cancel()
 					print("An error occured while trying to read the playlist...")
 					action=""
 					while action!='r' and action!='a':
 						action = input("Type r to retry or a to abort:\n")
 						action = action.rstrip().strip()
 					if action == 'r':
+						reportPlaylistProgress()
 						continue
 					if action == 'a':
 						return 1
@@ -323,6 +340,32 @@ def gather(vID):
 	#RETURN 1 if ERROR IS RAISED
 	#done
 	try:
+		#Channel Lock
+		while True:
+			err = activateChannelLock(vID)
+			if err == 1:
+				t.cancel()
+				print("an error occured while trying to access an uploader's channel for a video")
+				action=""
+				while action!='r' and action!='a' and action!='i':
+					action = input("Type r to retry, i to ignore or a to abort:\n")
+					action = action.rstrip().strip()
+				if action == 'r':
+					reportGathering()
+					continue
+				if action == 'i':
+					reportGathering()
+					return 0
+				if action == 'a':
+					global channelLockError
+					channelLockError=True
+					return 1
+			if err == 2:
+				print("https://www.youtube.com/watch?v={} is unavailable, skipping...".format(vID))
+				break
+			break
+		#ChannelLock ends here
+
 		r = requests.get("https://www.youtube.com/annotations_invideo?video_id={}".format(vID))
 		#print("https://www.youtube.com/annotations_invideo?video_id={}".format(vID))
 		#xml = ""
@@ -387,9 +430,9 @@ def setHardLimit():
 	print("Throughly scanning links can sometimes generate thousands of videos.")
 	print("To spare your computer we offer the option of setting a hard limit to how many videos its allowed to scan.")
 	print("(Besides videos already included in the playlist)")
-	print("Although this is largely dependent on what video you're scanning and on your internet speed")
+	print("Although this is largely dependent on which playlist you're scanning and on your internet speed")
 	print("We found that the average speed was about 10000 videos/hour on our devices.")
-	print("Keep in mind that this is only the discovery process and that nothing is backed up in this phase.")
+	#print("Keep in mind that this is only the discovery process and that nothing is backed up in this phase.")
 	action=""
 	while True:
 		print("Please type a single number specifying the maximum number of videos to be scanned")
@@ -402,9 +445,9 @@ def setHardLimit():
 			hardLimitSet = True
 			hardLimit = getTheNumber(action)+len(p)
 			if hardLimit==1:
-				print("Limitted scan to 1 video.")
+				print("Limited scan to 1 video.")
 			else:
-				print("Limitted scan to {} videos.".format(str(hardLimit)))
+				print("Limited scan to {} videos.".format(str(hardLimit)))
 			return 0
 
 
@@ -433,6 +476,37 @@ def validInterval(a,b,d):
 	elif a > b:
 		return False
 	return True 
+
+def setChannelLock():
+	#Channel Lock
+	global channelLock
+	print("Would you like to only search for videos linked to same channel?")
+	print("This is a good idea if you only want to fetch unlisted videos from a video.")
+	#print("Keep in mind that this is only the discovery process and that nothing is backed up in this phase.")
+	action=""
+	while True:
+		print("Type y to confirm or enter to scan regardless:")
+		action = input("")
+		action = action.rstrip().strip()
+		if action == '':
+			channelLock=False
+			return 0
+		elif action == 'y':
+			channelLock=True
+			return 0
+def activateChannelLock(vID):
+	#Attempt to get channel of vID
+	#print("attempting to get channel")
+	
+	cID=getVideoUser(vID)
+	#print("ACTIW8: {} -> {} ".format(vID,cID))
+	if cID=="":
+		if videoUnavailable(vID):
+			return 2
+		return 1
+	channel=channelExtractor(cID)
+	return 0
+	#cID
 
 if __name__== "__main__":
 	main()
